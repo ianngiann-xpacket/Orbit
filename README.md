@@ -29,3 +29,11 @@
 - `styles.css` — 디자인
 - `app.js` — 동작
 - `sample-data.js` — 예시 인물
+
+## 아이폰에 설치하기
+
+1. 아이폰 **Safari**에서 Orbit 주소를 엽니다.
+2. 아래쪽 공유 버튼 → 목록을 아래로 내려 **홈 화면에 추가**를 누릅니다.
+3. 홈 화면의 Orbit 아이콘으로 열면 전체 화면으로 뜨고, 인터넷 없이도 열립니다.
+
+주소는 GitHub Pages로 자동으로 올라갑니다 (`.github/workflows/pages.yml`).

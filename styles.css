@@ -729,3 +729,16 @@ svg { flex: none; }
 @media (prefers-reduced-motion: reduce) {
   .profile, .profile.open, .card, .btn, .entry-actions { transition: none; }
 }
+
+/* iPhone zooms into any text field smaller than 16px when it is tapped. */
+@media (max-width: 1023px) {
+  .search input,
+  .nav-input,
+  .field-company,
+  .detail select,
+  .detail input[type="date"],
+  .composer textarea,
+  .composer input[type="date"],
+  .entry textarea,
+  .entry input[type="date"] { font-size: 16px; }
+}
