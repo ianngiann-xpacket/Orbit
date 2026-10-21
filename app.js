@@ -145,6 +145,9 @@
     confirming: null,
     addingCategory: false,
     confirmingClear: false,
+    selecting: false,
+    selected: {},
+    confirmingBulk: false,
     // null | { view: "menu", notice } | { view: "import", contacts } | { view: "restore", backup }
     modal: null
   };
@@ -234,6 +237,7 @@
     close: svg('<path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/>'),
     back: svg('<path d="M12.5 4.5L7 10l5.5 5.5"/>'),
     person: svg('<circle cx="10" cy="7" r="3.2"/><path d="M3.8 17c.8-3.3 3.2-5 6.2-5s5.4 1.7 6.2 5"/>'),
+    check: svg('<path d="M5.5 10.5l3 3 6-7"/>'),
     tray: svg('<path d="M3 11.5h4l1 2h4l1-2h4"/><path d="M3 11.5V15a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3.5L15 4.5H5z"/>'),
     card: svg('<rect x="2.5" y="4" width="15" height="12" rx="2.5"/><circle cx="7.5" cy="9" r="1.8"/><path d="M4.8 13.5c.5-1.3 1.5-2 2.7-2s2.2.7 2.7 2M12 8.5h3M12 11.5h3"/>'),
     save: svg('<path d="M10 3v9.5M6.5 9l3.5 3.5L13.5 9"/><path d="M3.5 13.5V15a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1.5"/>'),
@@ -269,7 +273,10 @@
     '        <div class="list-head">' +
     '          <div class="list-title-row">' +
     '            <h3 class="list-title" id="list-title"></h3>' +
-    '            <button type="button" class="icon-btn" id="add-person" title="사람 추가" aria-label="사람 추가">' + ICON.plus + "</button>" +
+    '            <span class="list-actions">' +
+    '              <button type="button" class="btn-link" id="select-toggle">선택</button>' +
+    '              <button type="button" class="icon-btn" id="add-person" title="사람 추가" aria-label="사람 추가">' + ICON.plus + "</button>" +
+    "            </span>" +
     "          </div>" +
     '          <div id="filter-chip-slot"></div>' +
     '          <label class="search">' + ICON.search +
@@ -283,6 +290,7 @@
     "            </select></div>" +
     "        </div>" +
     '        <div class="list-scroll" id="list"></div>' +
+    '        <div class="bulk-bar" id="bulk-bar" hidden></div>' +
     "      </section>" +
     '      <section class="profile" id="profile" aria-label="프로필">' +
     '        <div class="profile-empty" id="profile-empty">' + ICON.person +
@@ -362,6 +370,9 @@
     historyTitle: $("history-title"),
     timeline: $("timeline"),
     danger: $("danger-zone"),
+    selectToggle: $("select-toggle"),
+    addPerson: $("add-person"),
+    bulkBar: $("bulk-bar"),
     modal: $("modal"),
     modalScrim: $("modal-scrim"),
     vcfInput: $("vcf-input"),
@@ -457,8 +468,12 @@
   function rowHTML(p) {
     var last = latest(p);
     var preview = last ? last.text.replace(/\s+/g, " ").trim() : "";
+    var picked = !!state.selected[p.id];
     return (
-      '<li><button type="button" class="row" data-id="' + esc(p.id) + '" aria-current="' + (state.openId === p.id) + '">' +
+      '<li><button type="button" class="row' + (state.selecting ? " selecting" : "") + '" data-id="' + esc(p.id) + '"' +
+      (state.selecting
+        ? ' aria-pressed="' + picked + '" aria-current="false"><span class="check" aria-hidden="true">' + ICON.check + "</span>"
+        : ' aria-current="' + (state.openId === p.id) + '">') +
       '<span class="avatar" aria-hidden="true">' + esc(initials(p.name)) + "</span>" +
       '<span class="row-body">' +
       '<span class="row-top"><span class="name">' + esc(p.name || "이름 없음") + "</span>" +
@@ -493,6 +508,67 @@
     } else {
       els.list.innerHTML = '<ul class="list">' + people.map(rowHTML).join("") + "</ul>";
     }
+    renderBulk(people);
+  }
+
+  // ---------- Multi-select ----------
+
+  function renderBulk(visible) {
+    // Only people still on screen can stay selected, so the count always matches what is ticked.
+    var kept = {};
+    visible.forEach(function (p) { if (state.selected[p.id]) kept[p.id] = true; });
+    state.selected = kept;
+    var n = Object.keys(kept).length;
+
+    if (!state.people.length) state.selecting = false;
+    els.selectToggle.textContent = state.selecting ? "완료" : "선택";
+    els.selectToggle.hidden = !state.people.length;
+    els.addPerson.hidden = state.selecting;
+    els.bulkBar.hidden = !state.selecting;
+    if (!state.selecting) {
+      els.bulkBar.innerHTML = "";
+      return;
+    }
+
+    var allPicked = visible.length > 0 && n === visible.length;
+    els.bulkBar.innerHTML = state.confirmingBulk && n
+      ? '<p class="bulk-ask">' + n + "명과 이 사람들의 연락 기록을 모두 삭제합니다. 되돌릴 수 없어요.</p>" +
+        '<div class="bulk-row"><button type="button" class="btn btn-quiet" data-action="bulk-cancel">취소</button>' +
+        '<button type="button" class="btn btn-danger" data-action="bulk-delete-confirm">' + n + "명 삭제</button></div>"
+      : '<div class="bulk-row">' +
+        '<button type="button" class="btn-link" data-action="' + (allPicked ? "bulk-none" : "bulk-all") + '">' +
+        (allPicked ? "모두 해제" : "모두 선택") + "</button>" +
+        '<span class="bulk-count">' + (n ? n + "명 선택됨" : "삭제할 사람을 고르세요") + "</span>" +
+        '<button type="button" class="btn btn-danger" data-action="bulk-delete"' + (n ? "" : " disabled") + ">삭제</button></div>";
+  }
+
+  function setSelecting(on) {
+    state.selecting = on;
+    state.selected = {};
+    state.confirmingBulk = false;
+    renderList();
+  }
+
+  function deleteSelected() {
+    var ids = state.selected;
+    var n = Object.keys(ids).length;
+    state.people = state.people.filter(function (p) { return !ids[p.id]; });
+    if (state.openId && ids[state.openId]) {
+      state.openId = null;
+      state.editingEntry = null;
+      state.confirming = null;
+    }
+    state.selected = {};
+    state.confirmingBulk = false;
+    state.selecting = false;
+    var first = WIDE.matches && !state.openId && visiblePeople()[0];
+    if (first) {
+      state.openId = first.id;
+      fillProfile(first);
+    }
+    save();
+    renderAll();
+    showToast(n + "명을 삭제했어요");
   }
 
   function renderAll() {
@@ -1122,7 +1198,44 @@
       return;
     }
     var row = e.target.closest("[data-id]");
-    if (row) openPerson(row.getAttribute("data-id"), false);
+    if (!row) return;
+    var id = row.getAttribute("data-id");
+    if (state.selecting) {
+      if (state.selected[id]) delete state.selected[id];
+      else state.selected[id] = true;
+      state.confirmingBulk = false;
+      row.setAttribute("aria-pressed", String(!!state.selected[id]));
+      renderBulk(visiblePeople());
+      return;
+    }
+    openPerson(id, false);
+  });
+
+  els.selectToggle.addEventListener("click", function () {
+    setSelecting(!state.selecting);
+  });
+
+  els.bulkBar.addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-action]");
+    if (!btn || btn.disabled) return;
+    var action = btn.getAttribute("data-action");
+    if (action === "bulk-all") {
+      visiblePeople().forEach(function (p) { state.selected[p.id] = true; });
+      state.confirmingBulk = false;
+      renderList();
+    } else if (action === "bulk-none") {
+      state.selected = {};
+      state.confirmingBulk = false;
+      renderList();
+    } else if (action === "bulk-delete") {
+      state.confirmingBulk = true;
+      renderBulk(visiblePeople());
+    } else if (action === "bulk-cancel") {
+      state.confirmingBulk = false;
+      renderBulk(visiblePeople());
+    } else if (action === "bulk-delete-confirm") {
+      deleteSelected();
+    }
   });
 
   $("add-person").addEventListener("click", function () {
@@ -1323,6 +1436,10 @@
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && state.modal) {
       closeModal();
+      return;
+    }
+    if (e.key === "Escape" && state.selecting) {
+      setSelecting(false);
       return;
     }
     if (e.key !== "Escape" || !state.openId) return;
