@@ -1,5 +1,5 @@
 // Keeps Orbit working offline. Online, the newest files are always fetched first.
-var CACHE = "orbit-v1";
+var CACHE = "orbit-v2";
 var FILES = [
   "./",
   "./index.html",

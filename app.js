@@ -3,6 +3,7 @@
 
   var STORAGE_KEY = "orbit.v3";
   var SORT_KEY = "orbit.sort";
+  var BACKUP_KEY = "orbit.lastBackup";
   var DAY_MS = 24 * 60 * 60 * 1000;
   var ATTENTION_DAYS = 30; // 30–89일: 관심 필요
   var COLD_DAYS = 90; // 90일 이상 또는 기록 없음: 연락 끊김
@@ -143,7 +144,9 @@
     editingEntry: null,
     confirming: null,
     addingCategory: false,
-    confirmingClear: false
+    confirmingClear: false,
+    // null | { view: "menu", notice } | { view: "import", contacts } | { view: "restore", backup }
+    modal: null
   };
 
   function find(id) {
@@ -230,7 +233,11 @@
     calendar: svg('<rect x="3" y="4.5" width="14" height="12.5" rx="2.5"/><path d="M3 8.5h14M7 2.75v3.5M13 2.75v3.5"/>'),
     close: svg('<path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/>'),
     back: svg('<path d="M12.5 4.5L7 10l5.5 5.5"/>'),
-    person: svg('<circle cx="10" cy="7" r="3.2"/><path d="M3.8 17c.8-3.3 3.2-5 6.2-5s5.4 1.7 6.2 5"/>')
+    person: svg('<circle cx="10" cy="7" r="3.2"/><path d="M3.8 17c.8-3.3 3.2-5 6.2-5s5.4 1.7 6.2 5"/>'),
+    tray: svg('<path d="M3 11.5h4l1 2h4l1-2h4"/><path d="M3 11.5V15a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3.5L15 4.5H5z"/>'),
+    card: svg('<rect x="2.5" y="4" width="15" height="12" rx="2.5"/><circle cx="7.5" cy="9" r="1.8"/><path d="M4.8 13.5c.5-1.3 1.5-2 2.7-2s2.2.7 2.7 2M12 8.5h3M12 11.5h3"/>'),
+    save: svg('<path d="M10 3v9.5M6.5 9l3.5 3.5L13.5 9"/><path d="M3.5 13.5V15a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1.5"/>'),
+    restore: svg('<path d="M10 12.5V3M6.5 6.5L10 3l3.5 3.5"/><path d="M3.5 13.5V15a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1.5"/>')
   };
 
   var CARDS = [
@@ -319,7 +326,12 @@
     "      </section>" +
     "    </div>" +
     "  </div>" +
-    "</div>";
+    "</div>" +
+    '<div class="modal-scrim" id="modal-scrim" hidden></div>' +
+    '<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" hidden></div>' +
+    '<input type="file" id="vcf-input" accept=".vcf,text/vcard,text/x-vcard,text/directory" hidden>' +
+    '<input type="file" id="backup-input" accept=".json,application/json" hidden>' +
+    '<div class="toast" id="toast" role="status" aria-live="polite"></div>';
 
   var $ = function (id) { return document.getElementById(id); };
   var els = {
@@ -349,7 +361,12 @@
     newDate: $("new-date"),
     historyTitle: $("history-title"),
     timeline: $("timeline"),
-    danger: $("danger-zone")
+    danger: $("danger-zone"),
+    modal: $("modal"),
+    modalScrim: $("modal-scrim"),
+    vcfInput: $("vcf-input"),
+    backupInput: $("backup-input"),
+    toast: $("toast")
   };
 
   // ---------- Views ----------
@@ -385,14 +402,16 @@
     els.nav.innerHTML = html;
 
     var hasSamples = state.people.some(function (p) { return p.sample; });
-    els.foot.innerHTML = !hasSamples
+    els.foot.innerHTML =
+      '<button type="button" class="nav-add" data-action="open-data">' + ICON.tray + "가져오기 및 백업</button>" +
+      (!hasSamples
       ? ""
       : state.confirmingClear
         ? "<span>예시 인물을 모두 지울까요?</span>" +
           '<span class="row-actions"><button type="button" class="btn-link danger" data-action="clear-confirm">지우기</button>' +
           '<button type="button" class="btn-link" data-action="clear-cancel">취소</button></span>'
         : "<span>지금 보이는 사람들은 예시입니다.</span>" +
-          '<span class="row-actions"><button type="button" class="btn-link" data-action="clear-ask">예시 지우고 시작하기</button></span>';
+          '<span class="row-actions"><button type="button" class="btn-link" data-action="clear-ask">예시 지우고 시작하기</button></span>');
 
     var input = $("new-category");
     if (input) input.focus();
@@ -462,7 +481,8 @@
 
     if (!state.people.length) {
       els.list.innerHTML =
-        '<div class="list-empty"><strong>아직 아무도 없어요</strong>위의 ＋ 버튼을 눌러 첫 번째 사람을 추가해 보세요.</div>';
+        '<div class="list-empty"><strong>아직 아무도 없어요</strong>위의 ＋ 버튼으로 한 명씩 추가하거나, ' +
+        '<button type="button" class="btn-link" data-action="open-data">아이폰 연락처를 가져와</button> 보세요.</div>';
     } else if (!people.length) {
       var why = state.query.trim()
         ? "‘" + esc(state.query.trim()) + "’와 일치하는 사람이 없어요"
@@ -621,6 +641,393 @@
     renderAll();
   }
 
+  // ---------- Toast ----------
+
+  var toastTimer = null;
+
+  function showToast(message) {
+    els.toast.textContent = message;
+    els.toast.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { els.toast.classList.remove("show"); }, 2800);
+  }
+
+  // ---------- Contact files (vCard) ----------
+
+  function splitUnescaped(s, sep) {
+    var parts = [], cur = "";
+    for (var i = 0; i < s.length; i++) {
+      if (s[i] === "\\" && i + 1 < s.length) {
+        cur += s[i] + s[i + 1];
+        i++;
+      } else if (s[i] === sep) {
+        parts.push(cur);
+        cur = "";
+      } else {
+        cur += s[i];
+      }
+    }
+    parts.push(cur);
+    return parts;
+  }
+
+  function unescapeValue(s) {
+    return (s || "").replace(/\\([nN,;:\\])/g, function (m, c) {
+      return c === "n" || c === "N" ? " " : c;
+    }).replace(/\s+/g, " ").trim();
+  }
+
+  function decodeQuotedPrintable(s, charset) {
+    var bytes = [];
+    var encoder = new TextEncoder();
+    for (var i = 0; i < s.length; i++) {
+      var hex = s.substr(i + 1, 2);
+      if (s[i] === "=" && /^[0-9A-Fa-f]{2}$/.test(hex)) {
+        bytes.push(parseInt(hex, 16));
+        i += 2;
+      } else {
+        encoder.encode(s[i]).forEach(function (b) { bytes.push(b); });
+      }
+    }
+    try {
+      return new TextDecoder(charset || "utf-8").decode(new Uint8Array(bytes));
+    } catch (e) {
+      return new TextDecoder("utf-8").decode(new Uint8Array(bytes));
+    }
+  }
+
+  function nameFromN(n) {
+    var parts = splitUnescaped(n || "", ";").map(unescapeValue);
+    var family = parts[0] || "", given = parts[1] || "";
+    if (/[ㄱ-힝]/.test(family + given)) return (family + given).trim();
+    return [given, family].filter(Boolean).join(" ");
+  }
+
+  function finishCard(card) {
+    var org = card.ORG ? unescapeValue(splitUnescaped(card.ORG, ";")[0]) : "";
+    var title = unescapeValue(card.TITLE);
+    var person = unescapeValue(card.FN) || nameFromN(card.N);
+    // A company-only card uses the company as its name.
+    if (!person || person === org) return { name: org, company: title };
+    return { name: person, company: [org, title].filter(Boolean).join(" · ") };
+  }
+
+  // Reads the vCard files the iPhone Contacts app exports (versions 2.1, 3.0 and 4.0).
+  function parseVCards(text) {
+    var lines = text.replace(/^﻿/, "").replace(/\r\n?/g, "\n").replace(/\n[ \t]/g, "").split("\n");
+    var cards = [], card = null;
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var colon = line.indexOf(":");
+      if (colon < 0) continue;
+      var head = line.slice(0, colon).split(";");
+      var key = head[0].replace(/^.*\./, "").toUpperCase();
+      var params = head.slice(1).join(";").toUpperCase();
+      var value = line.slice(colon + 1);
+
+      if (key === "BEGIN" && value.trim().toUpperCase() === "VCARD") { card = {}; continue; }
+      if (key === "END" && value.trim().toUpperCase() === "VCARD") {
+        if (card) cards.push(finishCard(card));
+        card = null;
+        continue;
+      }
+      if (!card || ["FN", "N", "ORG", "TITLE"].indexOf(key) === -1 || card[key] != null) continue;
+
+      if (params.indexOf("QUOTED-PRINTABLE") !== -1) {
+        while (/=$/.test(value) && i + 1 < lines.length) value = value.slice(0, -1) + lines[++i];
+        var charset = (params.match(/CHARSET=([^;]+)/) || [])[1];
+        value = decodeQuotedPrintable(value, charset);
+      }
+      card[key] = value;
+    }
+
+    var seen = {};
+    return cards.filter(function (c) {
+      var k = normalizeName(c.name) + "|" + c.company;
+      if (!c.name || seen[k]) return false;
+      seen[k] = true;
+      return true;
+    });
+  }
+
+  function normalizeName(name) {
+    return (name || "").replace(/\s+/g, "").toLowerCase();
+  }
+
+  function startImport(file) {
+    file.text().then(function (text) {
+      var existing = {};
+      state.people.forEach(function (p) { existing[normalizeName(p.name)] = true; });
+      var contacts = parseVCards(text).map(function (c) {
+        var dup = !!existing[normalizeName(c.name)];
+        return { name: c.name, company: c.company, duplicate: dup, selected: !dup };
+      });
+      if (!contacts.length) {
+        state.modal = { view: "menu", notice: { error: true, text: "이 파일에서 연락처를 찾지 못했어요. 아이폰 연락처에서 내보낸 .vcf 파일인지 확인해 주세요." } };
+      } else {
+        state.modal = { view: "import", contacts: contacts };
+      }
+      renderModal();
+    }).catch(function () {
+      state.modal = { view: "menu", notice: { error: true, text: "파일을 읽지 못했어요. 다시 시도해 주세요." } };
+      renderModal();
+    });
+  }
+
+  function finishImport() {
+    var picked = state.modal.contacts.filter(function (c) { return c.selected; });
+    var select = $("import-category");
+    var categoryId = select ? select.value : "";
+    picked.forEach(function (c) {
+      state.people.push({ id: newId(), name: c.name, company: c.company, categoryId: categoryId, followUp: "", sample: false, log: [] });
+    });
+    state.category = categoryId || "all";
+    state.filter = null;
+    state.query = "";
+    els.search.value = "";
+    save();
+    closeModal();
+    renderAll();
+    showToast(picked.length + "명을 가져왔어요");
+  }
+
+  // ---------- Backup ----------
+
+  function lastBackupText() {
+    var at = null;
+    try { at = localStorage.getItem(BACKUP_KEY); } catch (e) {}
+    if (!at) return "아직 백업한 적이 없어요.";
+    var d = new Date(at);
+    return "마지막 백업: " + formatDate(toISO(d)) + " (" + relative(toISO(d)) + ")";
+  }
+
+  function markBackedUp() {
+    try { localStorage.setItem(BACKUP_KEY, new Date().toISOString()); } catch (e) {}
+    if (state.modal && state.modal.view === "menu") renderModal();
+    showToast("백업 파일을 저장했어요");
+  }
+
+  function downloadFile(blob, name) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  }
+
+  function saveBackup() {
+    var data = {
+      app: "Orbit",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      categories: state.categories,
+      people: state.people
+    };
+    var name = "orbit-backup-" + todayISO() + ".json";
+    var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    var file = null;
+    try { file = new File([blob], name, { type: "application/json" }); } catch (e) {}
+
+    // On a phone the share sheet offers "파일에 저장"; on a computer a normal download is clearer.
+    var touch = window.matchMedia("(pointer: coarse)").matches;
+    if (touch && file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: "Orbit 백업" }).then(markBackedUp).catch(function (err) {
+        if (err && err.name === "AbortError") return;
+        downloadFile(blob, name);
+        markBackedUp();
+      });
+      return;
+    }
+    downloadFile(blob, name);
+    markBackedUp();
+  }
+
+  var ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+  function readBackup(text) {
+    var d = JSON.parse(text);
+    if (!d || d.app !== "Orbit" || !Array.isArray(d.people) || !Array.isArray(d.categories)) throw new Error("not an Orbit backup");
+    var categories = d.categories
+      .filter(function (c) { return c && typeof c.id === "string" && typeof c.name === "string"; })
+      .map(function (c) { return { id: c.id, name: c.name }; });
+    var people = d.people
+      .filter(function (p) { return p && typeof p.id === "string"; })
+      .map(function (p) {
+        return {
+          id: p.id,
+          name: String(p.name || ""),
+          company: String(p.company || ""),
+          categoryId: typeof p.categoryId === "string" ? p.categoryId : "",
+          followUp: ISO_DATE.test(p.followUp) ? p.followUp : "",
+          sample: !!p.sample,
+          log: (Array.isArray(p.log) ? p.log : [])
+            .filter(function (e) { return e && ISO_DATE.test(e.date) && typeof e.text === "string"; })
+            .map(function (e) { return { id: typeof e.id === "string" ? e.id : newId(), date: e.date, text: e.text }; })
+        };
+      });
+    return { exportedAt: d.exportedAt, categories: categories, people: people };
+  }
+
+  function startRestore(file) {
+    file.text().then(function (text) {
+      state.modal = { view: "restore", backup: readBackup(text) };
+      renderModal();
+    }).catch(function () {
+      state.modal = { view: "menu", notice: { error: true, text: "Orbit 백업 파일이 아니에요. ‘백업 파일 저장’으로 만든 .json 파일을 골라 주세요." } };
+      renderModal();
+    });
+  }
+
+  function finishRestore() {
+    var b = state.modal.backup;
+    state.categories = b.categories;
+    state.people = b.people;
+    state.category = "all";
+    state.filter = null;
+    state.query = "";
+    els.search.value = "";
+    state.openId = null;
+    var first = WIDE.matches && visiblePeople()[0];
+    if (first) {
+      state.openId = first.id;
+      fillProfile(first);
+    }
+    save();
+    closeModal();
+    renderAll();
+    showToast("백업을 복원했어요");
+  }
+
+  // ---------- Import & backup dialog ----------
+
+  var modalReturnFocus = null;
+
+  function openModal() {
+    modalReturnFocus = document.activeElement;
+    state.modal = { view: "menu" };
+    renderModal();
+  }
+
+  function closeModal() {
+    state.modal = null;
+    renderModal();
+    if (modalReturnFocus && document.contains(modalReturnFocus)) modalReturnFocus.focus();
+  }
+
+  function modalHead(title) {
+    return (
+      '<div class="modal-head"><h2 id="modal-title">' + title + "</h2>" +
+      '<button type="button" class="icon-btn" data-action="close" aria-label="닫기">' + ICON.close + "</button></div>"
+    );
+  }
+
+  function menuHTML() {
+    var notice = state.modal.notice;
+    return (
+      modalHead("가져오기 및 백업") +
+      '<div class="modal-body">' +
+      (notice ? '<p class="notice' + (notice.error ? " error" : "") + '" role="alert">' + esc(notice.text) + "</p>" : "") +
+      '<section class="modal-section">' +
+      '<div class="modal-section-head"><span class="modal-icon">' + ICON.card + "</span><h3>아이폰 연락처 가져오기</h3></div>" +
+      "<p>아이폰 연락처에서 내보낸 파일(.vcf)을 고르면 이름과 회사를 한 번에 가져옵니다. 가져올 사람은 다음 화면에서 고를 수 있어요.</p>" +
+      "<details><summary>아이폰에서 연락처 파일 만드는 법</summary><ol>" +
+      "<li><strong>연락처</strong> 앱을 열고 왼쪽 위 <strong>목록</strong>을 누릅니다.</li>" +
+      "<li><strong>모든 연락처</strong>(또는 원하는 목록)를 길게 누르고 <strong>내보내기</strong>를 누릅니다.</li>" +
+      "<li><strong>파일에 저장</strong>을 고릅니다.</li>" +
+      "<li>여기로 돌아와 아래 버튼을 누르고 방금 저장한 파일을 고릅니다.</li>" +
+      "</ol><p>한 사람만 가져오려면 그 사람의 연락처 화면에서 <strong>연락처 공유 → 파일에 저장</strong>을 누르면 됩니다.</p></details>" +
+      '<div class="modal-actions"><button type="button" class="btn btn-primary" data-action="pick-vcf">연락처 파일 선택</button></div>' +
+      "</section>" +
+      '<section class="modal-section">' +
+      '<div class="modal-section-head"><span class="modal-icon">' + ICON.save + "</span><h3>백업</h3></div>" +
+      "<p>모든 사람과 연락 기록을 파일 하나로 저장합니다. 아이폰을 바꾸거나 데이터가 지워져도 이 파일로 되살릴 수 있어요. 파일에는 개인 기록이 들어 있으니 안전한 곳에 보관하세요.</p>" +
+      '<p class="muted">' + esc(lastBackupText()) + "</p>" +
+      '<div class="modal-actions">' +
+      '<button type="button" class="btn btn-primary" data-action="save-backup">백업 파일 저장</button>' +
+      '<button type="button" class="btn btn-quiet" data-action="pick-backup">백업에서 복원</button>' +
+      "</div></section>" +
+      "</div>"
+    );
+  }
+
+  function importCountLabel() {
+    var n = state.modal.contacts.filter(function (c) { return c.selected; }).length;
+    return n ? n + "명 가져오기" : "가져올 사람을 고르세요";
+  }
+
+  function importHTML() {
+    var contacts = state.modal.contacts;
+    var dupCount = contacts.filter(function (c) { return c.duplicate; }).length;
+    var defaultCategory = state.category === "all" ? "" : state.category;
+    return (
+      modalHead("연락처 가져오기") +
+      '<div class="modal-body">' +
+      '<p class="modal-lead">파일에서 ' + contacts.length + "명을 찾았어요." +
+      (dupCount ? " 이미 Orbit에 있는 " + dupCount + "명은 빼 두었어요." : "") + "</p>" +
+      '<div class="import-tools">' +
+      '<span class="row-actions"><button type="button" class="btn-link" data-action="select-all">모두 선택</button>' +
+      '<button type="button" class="btn-link muted" data-action="select-none">모두 해제</button></span>' +
+      '<label class="import-category">카테고리 <select id="import-category">' +
+      '<option value="">없음</option>' +
+      state.categories.map(function (c) {
+        return '<option value="' + esc(c.id) + '"' + (c.id === defaultCategory ? " selected" : "") + ">" + esc(c.name) + "</option>";
+      }).join("") +
+      "</select></label></div>" +
+      '<ul class="import-list">' +
+      contacts.map(function (c, i) {
+        return (
+          '<li><label class="import-row">' +
+          '<input type="checkbox" data-index="' + i + '"' + (c.selected ? " checked" : "") + ">" +
+          '<span class="import-who"><span class="name">' + esc(c.name) + "</span>" +
+          (c.company ? '<span class="company">' + esc(c.company) + "</span>" : "") + "</span>" +
+          (c.duplicate ? '<span class="import-tag">이미 있음</span>' : "") +
+          "</label></li>"
+        );
+      }).join("") +
+      "</ul></div>" +
+      '<div class="modal-foot">' +
+      '<button type="button" class="btn btn-quiet" data-action="back">취소</button>' +
+      '<button type="button" class="btn btn-primary" data-action="import-confirm" id="import-confirm">' + importCountLabel() + "</button>" +
+      "</div>"
+    );
+  }
+
+  function restoreHTML() {
+    var b = state.modal.backup;
+    var entries = b.people.reduce(function (n, p) { return n + p.log.length; }, 0);
+    var when = b.exportedAt && !isNaN(new Date(b.exportedAt)) ? formatDate(toISO(new Date(b.exportedAt))) + "에 저장한 백업입니다." : "Orbit 백업 파일입니다.";
+    return (
+      modalHead("백업에서 복원") +
+      '<div class="modal-body">' +
+      '<p class="modal-lead">' + when + " 사람 " + b.people.length + "명, 연락 기록 " + entries + "건이 들어 있어요.</p>" +
+      '<p class="notice error">지금 Orbit에 있는 사람 ' + state.people.length + "명과 모든 기록이 백업 내용으로 바뀝니다. 되돌릴 수 없으니, 필요하면 먼저 지금 상태를 백업해 두세요.</p>" +
+      "</div>" +
+      '<div class="modal-foot">' +
+      '<button type="button" class="btn btn-quiet" data-action="back">취소</button>' +
+      '<button type="button" class="btn btn-danger" data-action="restore-confirm">복원</button>' +
+      "</div>"
+    );
+  }
+
+  function renderModal() {
+    var open = !!state.modal;
+    els.modal.hidden = !open;
+    els.modalScrim.hidden = !open;
+    document.body.classList.toggle("modal-open", open);
+    if (!open) {
+      els.modal.innerHTML = "";
+      return;
+    }
+    var view = state.modal.view;
+    els.modal.className = "modal modal-" + view;
+    els.modal.innerHTML = view === "import" ? importHTML() : view === "restore" ? restoreHTML() : menuHTML();
+    var focus = els.modal.querySelector(view === "menu" ? ".modal-section .btn" : ".modal-foot .btn-primary, .modal-foot .btn-danger");
+    if (focus) focus.focus();
+  }
+
   // ---------- Events ----------
 
   els.nav.addEventListener("click", function (e) {
@@ -665,7 +1072,12 @@
   });
 
   els.foot.addEventListener("click", function (e) {
-    var action = e.target.getAttribute("data-action");
+    var btn = e.target.closest("[data-action]");
+    var action = btn && btn.getAttribute("data-action");
+    if (action === "open-data") {
+      openModal();
+      return;
+    }
     if (action === "clear-ask") state.confirmingClear = true;
     if (action === "clear-cancel") state.confirmingClear = false;
     if (action === "clear-confirm") {
@@ -705,6 +1117,10 @@
   });
 
   els.list.addEventListener("click", function (e) {
+    if (e.target.closest('[data-action="open-data"]')) {
+      openModal();
+      return;
+    }
     var row = e.target.closest("[data-id]");
     if (row) openPerson(row.getAttribute("data-id"), false);
   });
@@ -861,7 +1277,54 @@
     renderDanger();
   });
 
+  els.modal.addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-action]");
+    if (!btn || !state.modal) return;
+    var action = btn.getAttribute("data-action");
+    if (action === "close") closeModal();
+    if (action === "back") {
+      state.modal = { view: "menu" };
+      renderModal();
+    }
+    if (action === "pick-vcf") els.vcfInput.click();
+    if (action === "pick-backup") els.backupInput.click();
+    if (action === "save-backup") saveBackup();
+    if (action === "import-confirm" && state.modal.contacts.some(function (c) { return c.selected; })) finishImport();
+    if (action === "restore-confirm") finishRestore();
+    if (action === "select-all" || action === "select-none") {
+      var on = action === "select-all";
+      state.modal.contacts.forEach(function (c) { c.selected = on; });
+      Array.prototype.forEach.call(els.modal.querySelectorAll(".import-row input"), function (box) { box.checked = on; });
+      $("import-confirm").textContent = importCountLabel();
+    }
+  });
+
+  els.modal.addEventListener("change", function (e) {
+    var i = e.target.getAttribute("data-index");
+    if (i === null || !state.modal || state.modal.view !== "import") return;
+    state.modal.contacts[Number(i)].selected = e.target.checked;
+    $("import-confirm").textContent = importCountLabel();
+  });
+
+  els.modalScrim.addEventListener("click", closeModal);
+
+  els.vcfInput.addEventListener("change", function () {
+    var file = els.vcfInput.files[0];
+    els.vcfInput.value = "";
+    if (file) startImport(file);
+  });
+
+  els.backupInput.addEventListener("change", function () {
+    var file = els.backupInput.files[0];
+    els.backupInput.value = "";
+    if (file) startRestore(file);
+  });
+
   document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && state.modal) {
+      closeModal();
+      return;
+    }
     if (e.key !== "Escape" || !state.openId) return;
     if (state.editingEntry || state.confirming) {
       state.editingEntry = null;
